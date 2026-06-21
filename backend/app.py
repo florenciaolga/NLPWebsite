@@ -108,8 +108,6 @@ METRICS = {
     },
 }
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 tfidf_vec     = None
 tfidf_lr      = None
 tfidf_svm     = None
@@ -146,11 +144,11 @@ def load_models():
 
     # ── TF-IDF ────────────────────────────────────────────────────────────────
     try:
-        with open(os.path.join(BASE_DIR, 'tfidf_vectorizer.pkl'), 'rb') as f:
+        with open(os.path.join(MODEL_DIR, 'tfidf_vectorizer.pkl'), 'rb') as f:
             tfidf_vec = pickle.load(f)
-        with open(os.path.join(BASE_DIR, 'tfidf_lr_model.pkl'), 'rb') as f:
+        with open(os.path.join(MODEL_DIR, 'tfidf_lr_model.pkl'), 'rb') as f:
             tfidf_lr = pickle.load(f)
-        with open(os.path.join(BASE_DIR, 'tfidf_svm_model.pkl'), 'rb') as f:
+        with open(os.path.join(MODEL_DIR, 'tfidf_svm_model.pkl'), 'rb') as f:
             tfidf_svm = pickle.load(f)
         print("✓ TF-IDF models loaded.")
     except Exception as e:
@@ -159,12 +157,12 @@ def load_models():
     # ── FastText ──────────────────────────────────────────────────────────────
     try:
         import fasttext
-        ft_model = fasttext.load_model(os.path.join(BASE_DIR, 'fasttext_model.bin'))
+        ft_model = fasttext.load_model(os.path.join(MODEL_DIR, 'fasttext_model.bin'))
         print("✓ FastText .bin loaded via fasttext library.")
     except ImportError:
         try:
             from gensim.models.fasttext import load_facebook_model
-            ft_model = load_facebook_model(os.path.join(BASE_DIR, 'fasttext_model.bin'))
+            ft_model = load_facebook_model(os.path.join(MODEL_DIR, 'fasttext_model.bin'))
             print("✓ FastText .bin loaded via gensim.")
         except Exception as e:
             print(f"✗ FastText .bin load failed: {e}")
@@ -172,9 +170,9 @@ def load_models():
         print(f"✗ FastText .bin load failed: {e}")
 
     try:
-        with open(os.path.join(BASE_DIR, 'fasttext_lr_model.pkl'), 'rb') as f:
+        with open(os.path.join(MODEL_DIR, 'fasttext_lr_model.pkl'), 'rb') as f:
             ft_lr = pickle.load(f)
-        with open(os.path.join(BASE_DIR, 'fasttext_svm_model.pkl'), 'rb') as f:
+        with open(os.path.join(MODEL_DIR, 'fasttext_svm_model.pkl'), 'rb') as f:
             ft_svm = pickle.load(f)
         print("✓ FastText classifiers loaded.")
     except Exception as e:
@@ -183,13 +181,13 @@ def load_models():
     # ── LSTM ──────────────────────────────────────────────────────────────────
     try:
         from tensorflow.keras.models import load_model as keras_load
-        lstm_model = keras_load(os.path.join(BASE_DIR, 'lstm_model.keras'))
+        lstm_model = keras_load(os.path.join(MODEL_DIR, 'lstm_model.keras'))
         print("✓ LSTM model loaded.")
     except Exception as e:
         print(f"✗ LSTM model load failed: {e}")
 
     try:
-        with open(os.path.join(BASE_DIR, 'lstm_tokenizer.pkl'), 'rb') as f:
+        with open(os.path.join(MODEL_DIR, 'lstm_tokenizer.pkl'), 'rb') as f:
             lstm_tokenizer = pickle.load(f)
         print("✓ LSTM tokenizer loaded.")
     except Exception as e:
@@ -199,13 +197,19 @@ def load_models():
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
         import torch
-        bert_dir = os.path.join(BASE_DIR, 'indobert_model')
+        bert_dir = os.path.join(MODEL_DIR, 'indobert_model')
         bert_tokenizer = AutoTokenizer.from_pretrained(bert_dir)
         bert_model     = AutoModelForSequenceClassification.from_pretrained(bert_dir)
         bert_model.eval()
         print("✓ IndoBERT model loaded.")
     except Exception as e:
         print(f"✗ IndoBERT load failed: {e}")
+
+# Load models at import time so this works under gunicorn too,
+# not just when run directly with `python app.py`.
+print("Loading models...")
+load_models()
+print("Models ready.")
 
 # ─── API Routes ───────────────────────────────────────────────────────────────
 @app.route('/api/predict', methods=['POST'])
@@ -266,7 +270,7 @@ def predict():
             if lstm_model is None or lstm_tokenizer is None:
                 return jsonify({'error': 'LSTM model not loaded'}), 503
             from tensorflow.keras.preprocessing.sequence import pad_sequences
-            cleaned  = prep_base(text)
+            cleaned  = prep_lstm(text)
             seq      = lstm_tokenizer.texts_to_sequences([cleaned])
             padded   = pad_sequences(seq, maxlen=100, padding='pre', truncating='pre')
             prob     = float(lstm_model.predict(padded, verbose=0)[0][0])
@@ -319,7 +323,5 @@ def health():
     return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
-    print("Loading models...")
-    load_models()
-    print("Server ready on :5000")
-    app.run(debug=False, port=5000, host='0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, port=port, host='0.0.0.0')
