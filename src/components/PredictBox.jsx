@@ -40,7 +40,7 @@ export default function PredictBox({ model }) {
 
       setResult(d)
     } catch (e) {
-      setError('Backend error, please check railway')
+      setError('please retry')
     }
 
     setLoading(false)
