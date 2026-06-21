@@ -3,17 +3,26 @@ from flask_cors import CORS
 import numpy as np
 import re, string, os, pickle, time
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 import os
 
 MODEL_REPO = "florenciaolga/sentiment-analysis-models"
 MODEL_DIR = os.environ.get("MODEL_DIR", "./models")
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
-snapshot_download(
-    repo_id=MODEL_REPO,
-    local_dir=MODEL_DIR,
-    token=os.environ.get("HF_TOKEN")  # only needed if repo is private
-)
+def _get_file(filename):
+    """Download a single file from the HF repo the first time it's needed."""
+    return hf_hub_download(repo_id=MODEL_REPO, filename=filename, local_dir=MODEL_DIR, token=HF_TOKEN)
+
+def _get_folder(folder_name):
+    """Download only one subfolder from the HF repo the first time it's needed."""
+    snapshot_download(
+        repo_id=MODEL_REPO,
+        local_dir=MODEL_DIR,
+        token=HF_TOKEN,
+        allow_patterns=[f"{folder_name}/*"],
+    )
+    return os.path.join(MODEL_DIR, folder_name)
 
 app = Flask(__name__)
 CORS(app)
@@ -135,81 +144,73 @@ def get_fasttext_vec(text, model, dim=100):
     except Exception:
         return np.zeros(dim)
 
-# ─── Load models ──────────────────────────────────────────────────────────────
-def load_models():
+#buat railway
+
+def ensure_tfidf():
     global tfidf_vec, tfidf_lr, tfidf_svm
-    global ft_model, ft_lr, ft_svm
-    global lstm_model, lstm_tokenizer
-    global bert_model, bert_tokenizer
+    if tfidf_vec is not None and tfidf_lr is not None and tfidf_svm is not None:
+        return
+    with open(_get_file('tfidf_vectorizer.pkl'), 'rb') as f:
+        tfidf_vec = pickle.load(f)
+    with open(_get_file('tfidf_lr_model.pkl'), 'rb') as f:
+        tfidf_lr = pickle.load(f)
+    with open(_get_file('tfidf_svm_model.pkl'), 'rb') as f:
+        tfidf_svm = pickle.load(f)
+    print("✓ TF-IDF models loaded.")
 
-    # ── TF-IDF ────────────────────────────────────────────────────────────────
-    try:
-        with open(os.path.join(MODEL_DIR, 'tfidf_vectorizer.pkl'), 'rb') as f:
-            tfidf_vec = pickle.load(f)
-        with open(os.path.join(MODEL_DIR, 'tfidf_lr_model.pkl'), 'rb') as f:
-            tfidf_lr = pickle.load(f)
-        with open(os.path.join(MODEL_DIR, 'tfidf_svm_model.pkl'), 'rb') as f:
-            tfidf_svm = pickle.load(f)
-        print("✓ TF-IDF models loaded.")
-    except Exception as e:
-        print(f"✗ TF-IDF load failed: {e}")
-
-    # ── FastText ──────────────────────────────────────────────────────────────
+def ensure_fasttext_base():
+    global ft_model
+    if ft_model is not None:
+        return
+    path = _get_file('fasttext_model.bin')
     try:
         import fasttext
-        ft_model = fasttext.load_model(os.path.join(MODEL_DIR, 'fasttext_model.bin'))
+        ft_model = fasttext.load_model(path)
         print("✓ FastText .bin loaded via fasttext library.")
     except ImportError:
-        try:
-            from gensim.models.fasttext import load_facebook_model
-            ft_model = load_facebook_model(os.path.join(MODEL_DIR, 'fasttext_model.bin'))
-            print("✓ FastText .bin loaded via gensim.")
-        except Exception as e:
-            print(f"✗ FastText .bin load failed: {e}")
-    except Exception as e:
-        print(f"✗ FastText .bin load failed: {e}")
+        from gensim.models.fasttext import load_facebook_model
+        ft_model = load_facebook_model(path)
+        print("✓ FastText .bin loaded via gensim.")
 
-    try:
-        with open(os.path.join(MODEL_DIR, 'fasttext_lr_model.pkl'), 'rb') as f:
-            ft_lr = pickle.load(f)
-        with open(os.path.join(MODEL_DIR, 'fasttext_svm_model.pkl'), 'rb') as f:
-            ft_svm = pickle.load(f)
-        print("✓ FastText classifiers loaded.")
-    except Exception as e:
-        print(f"✗ FastText classifiers load failed: {e}")
+def ensure_fasttext_lr():
+    global ft_lr
+    ensure_fasttext_base()
+    if ft_lr is not None:
+        return
+    with open(_get_file('fasttext_lr_model.pkl'), 'rb') as f:
+        ft_lr = pickle.load(f)
+    print("✓ FastText LR classifier loaded.")
 
-    # ── LSTM ──────────────────────────────────────────────────────────────────
-    try:
-        from tensorflow.keras.models import load_model as keras_load
-        lstm_model = keras_load(os.path.join(MODEL_DIR, 'lstm_model.keras'))
-        print("✓ LSTM model loaded.")
-    except Exception as e:
-        print(f"✗ LSTM model load failed: {e}")
+def ensure_fasttext_svm():
+    global ft_svm
+    ensure_fasttext_base()
+    if ft_svm is not None:
+        return
+    with open(_get_file('fasttext_svm_model.pkl'), 'rb') as f:
+        ft_svm = pickle.load(f)
+    print("✓ FastText SVM classifier loaded.")
 
-    try:
-        with open(os.path.join(MODEL_DIR, 'lstm_tokenizer.pkl'), 'rb') as f:
-            lstm_tokenizer = pickle.load(f)
-        print("✓ LSTM tokenizer loaded.")
-    except Exception as e:
-        print(f"✗ LSTM tokenizer load failed: {e}")
+def ensure_lstm():
+    global lstm_model, lstm_tokenizer
+    if lstm_model is not None and lstm_tokenizer is not None:
+        return
+    from tensorflow.keras.models import load_model as keras_load
+    lstm_model = keras_load(_get_file('lstm_model.keras'))
+    with open(_get_file('lstm_tokenizer.pkl'), 'rb') as f:
+        lstm_tokenizer = pickle.load(f)
+    print("✓ LSTM model + tokenizer loaded.")
 
-    # ── IndoBERT ──────────────────────────────────────────────────────────────
-    try:
-        from transformers import AutoTokenizer, AutoModelForSequenceClassification
-        import torch
-        bert_dir = os.path.join(MODEL_DIR, 'indobert_model')
-        bert_tokenizer = AutoTokenizer.from_pretrained(bert_dir)
-        bert_model     = AutoModelForSequenceClassification.from_pretrained(bert_dir)
-        bert_model.eval()
-        print("✓ IndoBERT model loaded.")
-    except Exception as e:
-        print(f"✗ IndoBERT load failed: {e}")
+def ensure_indobert():
+    global bert_model, bert_tokenizer
+    if bert_model is not None and bert_tokenizer is not None:
+        return
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    bert_dir = _get_folder('indobert_model')
+    bert_tokenizer = AutoTokenizer.from_pretrained(bert_dir)
+    bert_model     = AutoModelForSequenceClassification.from_pretrained(bert_dir)
+    bert_model.eval()
+    print("✓ IndoBERT model loaded.")
 
-# Load models at import time so this works under gunicorn too,
-# not just when run directly with `python app.py`.
-print("Loading models...")
-load_models()
-print("Models ready.")
 
 # ─── API Routes ───────────────────────────────────────────────────────────────
 @app.route('/api/predict', methods=['POST'])
@@ -225,16 +226,14 @@ def predict():
 
     try:
         if model == 'tfidf_lr':
-            if tfidf_vec is None or tfidf_lr is None:
-                return jsonify({'error': 'TF-IDF LR model not loaded'}), 503
+            ensure_tfidf()
             cleaned = prep_base(text)
             vec     = tfidf_vec.transform([cleaned])
             pred    = int(tfidf_lr.predict(vec)[0])
             conf    = float(tfidf_lr.predict_proba(vec)[0][pred])
 
         elif model == 'tfidf_svm':
-            if tfidf_vec is None or tfidf_svm is None:
-                return jsonify({'error': 'TF-IDF SVM model not loaded'}), 503
+            ensure_tfidf()
             cleaned = prep_base(text)
             vec     = tfidf_vec.transform([cleaned])
             pred    = int(tfidf_svm.predict(vec)[0])
@@ -246,16 +245,14 @@ def predict():
                 conf  = 1 / (1 + math.exp(-abs(score)))
 
         elif model == 'fasttext_lr':
-            if ft_model is None or ft_lr is None:
-                return jsonify({'error': 'FastText LR model not loaded'}), 503
+            ensure_fasttext_lr()
             cleaned = prep_base(text)
             dv      = get_fasttext_vec(cleaned, ft_model).reshape(1, -1)
             pred    = int(ft_lr.predict(dv)[0])
             conf    = float(ft_lr.predict_proba(dv)[0][pred])
 
         elif model == 'fasttext_svm':
-            if ft_model is None or ft_svm is None:
-                return jsonify({'error': 'FastText SVM model not loaded'}), 503
+            ensure_fasttext_svm()
             cleaned = prep_base(text)
             dv      = get_fasttext_vec(cleaned, ft_model).reshape(1, -1)
             pred    = int(ft_svm.predict(dv)[0])
@@ -267,8 +264,7 @@ def predict():
                 conf  = 1 / (1 + math.exp(-abs(score)))
 
         elif model == 'lstm':
-            if lstm_model is None or lstm_tokenizer is None:
-                return jsonify({'error': 'LSTM model not loaded'}), 503
+            ensure_lstm()
             from tensorflow.keras.preprocessing.sequence import pad_sequences
             cleaned  = prep_lstm(text)
             seq      = lstm_tokenizer.texts_to_sequences([cleaned])
@@ -278,8 +274,7 @@ def predict():
             conf     = prob if pred == 1 else 1 - prob
 
         elif model == 'indobert':
-            if bert_model is None or bert_tokenizer is None:
-                return jsonify({'error': 'IndoBERT model not loaded'}), 503
+            ensure_indobert()
             import torch
             cleaned  = prep_base(text)
             inputs   = bert_tokenizer(
