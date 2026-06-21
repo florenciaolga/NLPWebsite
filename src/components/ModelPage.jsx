@@ -10,7 +10,7 @@ export default function ModelPage({ model }) {
     setMetrics(null)
     setLoadingMetrics(true)
 
-    fetch(`http://localhost:5000/api/metrics/${model.id}`)
+    fetch(`${import.meta.env.VITE_API_URL}/api/metrics/${model.id}`)
       .then(r => r.json())
       .then(d => {
         setMetrics(d)
