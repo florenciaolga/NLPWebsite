@@ -40,7 +40,7 @@ export default function PredictBox({ model }) {
 
       setResult(d)
     } catch (e) {
-      setError('Backend offline. Run: python3 backend/app.py')
+      setError('Backend error, please check railway')
     }
 
     setLoading(false)
